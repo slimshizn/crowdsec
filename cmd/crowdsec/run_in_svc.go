@@ -1,17 +1,19 @@
-//go:build linux || freebsd || netbsd || openbsd || solaris || !windows
-// +build linux freebsd netbsd openbsd solaris !windows
+//go:build !windows
 
 package main
 
 import (
-	"os"
+	"context"
+	"fmt"
+	"runtime/pprof"
+
+	log "github.com/sirupsen/logrus"
+
+	"github.com/crowdsecurity/go-cs-lib/trace"
+	"github.com/crowdsecurity/go-cs-lib/version"
 
 	"github.com/crowdsecurity/crowdsec/pkg/csconfig"
-	"github.com/crowdsecurity/crowdsec/pkg/cwversion"
 	"github.com/crowdsecurity/crowdsec/pkg/database"
-	"github.com/crowdsecurity/crowdsec/pkg/types"
-	log "github.com/sirupsen/logrus"
-	"github.com/sirupsen/logrus/hooks/writer"
 )
 
 func StartRunSvc() error {
@@ -20,52 +22,44 @@ func StartRunSvc() error {
 		err     error
 	)
 
-	// Set a default logger with level=fatal on stderr,
-	// in addition to the one we configure afterwards
-	log.AddHook(&writer.Hook{
-		Writer: os.Stderr,
-		LogLevels: []log.Level{
-			log.PanicLevel,
-			log.FatalLevel,
-		},
-	})
+	defer trace.CatchPanic("crowdsec/StartRunSvc")
 
-	cConfig, err = csconfig.NewConfig(flags.ConfigFile, flags.DisableAgent, flags.DisableAPI)
-	if err != nil {
+	// Always try to stop CPU profiling to avoid passing flags around
+	// It's a noop if profiling is not enabled
+	defer pprof.StopCPUProfile()
+
+	if cConfig, err = LoadConfig(flags.ConfigFile, flags.DisableAgent, flags.DisableAPI, false); err != nil {
 		return err
 	}
-	if err := LoadConfig(cConfig); err != nil {
-		return err
-	}
-	// Configure logging
-	if err = types.SetDefaultLoggerConfig(cConfig.Common.LogMedia, cConfig.Common.LogDir, *cConfig.Common.LogLevel,
-		cConfig.Common.LogMaxSize, cConfig.Common.LogMaxFiles, cConfig.Common.LogMaxAge, cConfig.Common.CompressLogs, cConfig.Common.ForceColorLogs); err != nil {
-		log.Fatal(err.Error())
-	}
 
-	log.Infof("Crowdsec %s", cwversion.VersionStr())
+	log.Infof("Crowdsec %s", version.String())
 
-	if bincoverTesting != "" {
-		log.Debug("coverage report is enabled")
-	}
-
-	apiReady := make(chan bool, 1)
 	agentReady := make(chan bool, 1)
 
 	// Enable profiling early
 	if cConfig.Prometheus != nil {
 		var dbClient *database.Client
+
 		var err error
 
-		if cConfig.DbConfig != nil {
-			dbClient, err = database.NewClient(cConfig.DbConfig)
+		ctx := context.TODO()
 
+		if cConfig.DbConfig != nil {
+			dbClient, err = database.NewClient(ctx, cConfig.DbConfig)
 			if err != nil {
-				log.Fatalf("unable to create database client: %s", err)
+				return fmt.Errorf("unable to create database client: %w", err)
 			}
 		}
+
 		registerPrometheus(cConfig.Prometheus)
-		go servePrometheus(cConfig.Prometheus, dbClient, apiReady, agentReady)
+
+		go servePrometheus(cConfig.Prometheus, dbClient, agentReady)
+	} else {
+		// avoid leaking the channel
+		go func() {
+			<-agentReady
+		}()
 	}
-	return Serve(cConfig, apiReady, agentReady)
+
+	return Serve(cConfig, agentReady)
 }

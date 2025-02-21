@@ -8,18 +8,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/crowdsecurity/crowdsec/pkg/cstest"
-	"github.com/crowdsecurity/crowdsec/pkg/types"
 	log "github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/tomb.v2"
+
+	"github.com/crowdsecurity/go-cs-lib/cstest"
+
+	"github.com/crowdsecurity/crowdsec/pkg/acquisition/configuration"
+	"github.com/crowdsecurity/crowdsec/pkg/types"
 )
 
 func TestBadConfiguration(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on windows")
 	}
+
 	tests := []struct {
 		config      string
 		expectedErr string
@@ -44,12 +49,11 @@ journalctl_filter:
 		},
 	}
 
-	subLogger := log.WithFields(log.Fields{
-		"type": "journalctl",
-	})
+	subLogger := log.WithField("type", "journalctl")
+
 	for _, test := range tests {
 		f := JournalCtlSource{}
-		err := f.Configure([]byte(test.config), subLogger)
+		err := f.Configure([]byte(test.config), subLogger, configuration.METRICS_NONE)
 		cstest.AssertErrorContains(t, err, test.expectedErr)
 	}
 }
@@ -58,6 +62,7 @@ func TestConfigureDSN(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on windows")
 	}
+
 	tests := []struct {
 		dsn         string
 		expectedErr string
@@ -76,7 +81,7 @@ func TestConfigureDSN(t *testing.T) {
 		},
 		{
 			dsn:         "journalctl://filters=%ZZ",
-			expectedErr: "could not parse journalctl DSN : invalid URL escape \"%ZZ\"",
+			expectedErr: "could not parse journalctl DSN: invalid URL escape \"%ZZ\"",
 		},
 		{
 			dsn:         "journalctl://filters=_UID=42?log_level=warn",
@@ -91,20 +96,23 @@ func TestConfigureDSN(t *testing.T) {
 			expectedErr: "",
 		},
 	}
-	subLogger := log.WithFields(log.Fields{
-		"type": "journalctl",
-	})
+
+	subLogger := log.WithField("type", "journalctl")
+
 	for _, test := range tests {
 		f := JournalCtlSource{}
-		err := f.ConfigureByDSN(test.dsn, map[string]string{"type": "testtype"}, subLogger)
+		err := f.ConfigureByDSN(test.dsn, map[string]string{"type": "testtype"}, subLogger, "")
 		cstest.AssertErrorContains(t, err, test.expectedErr)
 	}
 }
 
 func TestOneShot(t *testing.T) {
+	ctx := t.Context()
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on windows")
 	}
+
 	tests := []struct {
 		config         string
 		expectedErr    string
@@ -136,41 +144,45 @@ journalctl_filter:
 		},
 	}
 	for _, ts := range tests {
-		var logger *log.Logger
-		var subLogger *log.Entry
-		var hook *test.Hook
+		var (
+			logger    *log.Logger
+			subLogger *log.Entry
+			hook      *test.Hook
+		)
+
 		if ts.expectedOutput != "" {
 			logger, hook = test.NewNullLogger()
 			logger.SetLevel(ts.logLevel)
-			subLogger = logger.WithFields(log.Fields{
-				"type": "journalctl",
-			})
+			subLogger = logger.WithField("type", "journalctl")
 		} else {
-			subLogger = log.WithFields(log.Fields{
-				"type": "journalctl",
-			})
+			subLogger = log.WithField("type", "journalctl")
 		}
+
 		tomb := tomb.Tomb{}
 		out := make(chan types.Event, 100)
 		j := JournalCtlSource{}
-		err := j.Configure([]byte(ts.config), subLogger)
+
+		err := j.Configure([]byte(ts.config), subLogger, configuration.METRICS_NONE)
 		if err != nil {
 			t.Fatalf("Unexpected error : %s", err)
 		}
-		err = j.OneShotAcquisition(out, &tomb)
+
+		err = j.OneShotAcquisition(ctx, out, &tomb)
 		cstest.AssertErrorContains(t, err, ts.expectedErr)
+
 		if err != nil {
 			continue
 		}
 
 		if ts.expectedLines != 0 {
-			assert.Equal(t, ts.expectedLines, len(out))
+			assert.Len(t, out, ts.expectedLines)
 		}
 
 		if ts.expectedOutput != "" {
 			if hook.LastEntry() == nil {
 				t.Fatalf("Expected log output '%s' but got nothing !", ts.expectedOutput)
 			}
+
 			assert.Contains(t, hook.LastEntry().Message, ts.expectedOutput)
 			hook.Reset()
 		}
@@ -178,9 +190,12 @@ journalctl_filter:
 }
 
 func TestStreaming(t *testing.T) {
+	ctx := t.Context()
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping test on windows")
 	}
+
 	tests := []struct {
 		config         string
 		expectedErr    string
@@ -201,28 +216,31 @@ journalctl_filter:
 		},
 	}
 	for _, ts := range tests {
-		var logger *log.Logger
-		var subLogger *log.Entry
-		var hook *test.Hook
+		var (
+			logger    *log.Logger
+			subLogger *log.Entry
+			hook      *test.Hook
+		)
+
 		if ts.expectedOutput != "" {
 			logger, hook = test.NewNullLogger()
 			logger.SetLevel(ts.logLevel)
-			subLogger = logger.WithFields(log.Fields{
-				"type": "journalctl",
-			})
+			subLogger = logger.WithField("type", "journalctl")
 		} else {
-			subLogger = log.WithFields(log.Fields{
-				"type": "journalctl",
-			})
+			subLogger = log.WithField("type", "journalctl")
 		}
+
 		tomb := tomb.Tomb{}
 		out := make(chan types.Event)
 		j := JournalCtlSource{}
-		err := j.Configure([]byte(ts.config), subLogger)
+
+		err := j.Configure([]byte(ts.config), subLogger, configuration.METRICS_NONE)
 		if err != nil {
 			t.Fatalf("Unexpected error : %s", err)
 		}
+
 		actualLines := 0
+
 		if ts.expectedLines != 0 {
 			go func() {
 			READLOOP:
@@ -237,8 +255,9 @@ journalctl_filter:
 			}()
 		}
 
-		err = j.StreamingAcquisition(out, &tomb)
+		err = j.StreamingAcquisition(ctx, out, &tomb)
 		cstest.AssertErrorContains(t, err, ts.expectedErr)
+
 		if err != nil {
 			continue
 		}
@@ -247,16 +266,21 @@ journalctl_filter:
 			time.Sleep(1 * time.Second)
 			assert.Equal(t, ts.expectedLines, actualLines)
 		}
+
 		tomb.Kill(nil)
-		tomb.Wait()
+		err = tomb.Wait()
+		require.NoError(t, err)
+
 		output, _ := exec.Command("pgrep", "-x", "journalctl").CombinedOutput()
-		if string(output) != "" {
+		if len(output) != 0 {
 			t.Fatalf("Found a journalctl process after killing the tomb !")
 		}
+
 		if ts.expectedOutput != "" {
 			if hook.LastEntry() == nil {
 				t.Fatalf("Expected log output '%s' but got nothing !", ts.expectedOutput)
 			}
+
 			assert.Contains(t, hook.LastEntry().Message, ts.expectedOutput)
 			hook.Reset()
 		}
@@ -269,5 +293,6 @@ func TestMain(m *testing.M) {
 		fullPath := filepath.Join(currentDir, "test_files")
 		os.Setenv("PATH", fullPath+":"+os.Getenv("PATH"))
 	}
+
 	os.Exit(m.Run())
 }

@@ -2,38 +2,40 @@ package apiclient
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
-	"github.com/crowdsecurity/crowdsec/pkg/cwversion"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/crowdsecurity/go-cs-lib/cstest"
 )
 
 func TestNewRequestInvalid(t *testing.T) {
+	ctx := t.Context()
+
 	mux, urlx, teardown := setup()
 	defer teardown()
-	//missing slash in uri
+
+	// missing slash in uri
 	apiURL, err := url.Parse(urlx)
-	if err != nil {
-		t.Fatalf("parsing api url: %s", apiURL)
-	}
+	require.NoError(t, err)
+
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", cwversion.VersionStr()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
-	if err != nil {
-		t.Fatalf("new api client: %s", err)
-	}
+	require.NoError(t, err)
+
 	/*mock login*/
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"code": 401, "message" : "bad login/password"}`))
+		_, err := w.Write([]byte(`{"code": 401, "message" : "bad login/password"}`))
+		assert.NoError(t, err)
 	})
 
 	mux.HandleFunc("/alerts", func(w http.ResponseWriter, r *http.Request) {
@@ -41,36 +43,36 @@ func TestNewRequestInvalid(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	_, _, err = client.Alerts.List(context.Background(), AlertsListOpts{})
-	assert.Contains(t, err.Error(), `building request: BaseURL must have a trailing slash, but `)
+	_, _, err = client.Alerts.List(ctx, AlertsListOpts{})
+	cstest.RequireErrorContains(t, err, "building request: BaseURL must have a trailing slash, but ")
 }
 
 func TestNewRequestTimeout(t *testing.T) {
+	ctx := t.Context()
+
 	mux, urlx, teardown := setup()
 	defer teardown()
-	//missing slash in uri
+
+	// missing slash in uri
 	apiURL, err := url.Parse(urlx + "/")
-	if err != nil {
-		t.Fatalf("parsing api url: %s", apiURL)
-	}
+	require.NoError(t, err)
+
 	client, err := NewClient(&Config{
 		MachineID:     "test_login",
 		Password:      "test_password",
-		UserAgent:     fmt.Sprintf("crowdsec/%s", cwversion.VersionStr()),
 		URL:           apiURL,
 		VersionPrefix: "v1",
 	})
-	if err != nil {
-		t.Fatalf("new api client: %s", err)
-	}
+	require.NoError(t, err)
+
 	/*mock login*/
 	mux.HandleFunc("/watchers/login", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
 	_, _, err = client.Alerts.List(ctx, AlertsListOpts{})
-	assert.Contains(t, err.Error(), `performing request: context deadline exceeded`)
+	cstest.RequireErrorMessage(t, err, "performing request: context deadline exceeded")
 }

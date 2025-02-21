@@ -1,9 +1,7 @@
 common:
   daemonize: true
-  pid_dir: /tmp/
   log_media: stdout
   log_level: info
-  working_dir: .
 config_paths:
   config_dir: ./config
   data_dir: ./data/   
@@ -35,6 +33,7 @@ api:
   client:
     credentials_path: ./config/local_api_credentials.yaml
   server:
+    console_path: ./config/console.yaml
     #insecure_skip_verify: true
     listen_uri: 127.0.0.1:8081
     profiles_path: ./config/profiles.yaml
